@@ -336,6 +336,16 @@ const stackChips = STACKS.map(s =>
   chip(document.getElementById("f-stack"), s, false,
     on => on ? state.stacks.add(s) : state.stacks.delete(s)));
 
+// 기본 선택값 중 그날 공고가 하나도 없는 항목은 칩이 안 생깁니다.
+// 그대로 두면 끌 수 있는 칩이 없는데 필터는 계속 걸려 결과가 0건이 됩니다.
+function syncToChips(set, chips){
+  const labels = new Set(chips.map(c => c.textContent));
+  [...set].forEach(v => { if (!labels.has(v)) set.delete(v); });
+}
+syncToChips(state.roles, roleChips);
+syncToChips(state.regions, regionChips);
+syncToChips(state.careers, careerChips);
+
 const periodChips = [];
 [[7, "1주일"], [14, "2주일"], [30, "30일"], [0, "전체"]].forEach(([days, label]) => {
   const b = chip(document.getElementById("f-period"), label, state.period === days, (on, self) => {
@@ -375,6 +385,9 @@ document.getElementById("reset").onclick = () => {
   press(regionChips, DEFAULT_REGIONS);
   press(careerChips, DEFAULT_CAREERS);
   press(stackChips, []);
+  syncToChips(state.roles, roleChips);
+  syncToChips(state.regions, regionChips);
+  syncToChips(state.careers, careerChips);
   periodChips.forEach(c => c.setAttribute("aria-pressed", String(c.dataset.days === String(DEFAULT_PERIOD))));
   savePrefs(); render();
 };
@@ -458,6 +471,9 @@ document.getElementById("selectAll").onclick = () => {
 };
 
 // ── 필터 ──────────────────────────────────────
+const headBlob = (j) => `${j.company} ${j.title} ${j.region}`.toLowerCase();
+const fullBlob = (j) => `${headBlob(j)} ${j.stack || ""} ${j.body || ""}`.toLowerCase();
+
 function splitWords(text){
   return text.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 }
@@ -475,10 +491,13 @@ function match(j, words, incl){
   if (state.careers.size && !j.careerTags.some(c => state.careers.has(c))) return false;
   if (state.period && j.age > state.period) return false;
 
-  const blob = `${j.company} ${j.title} ${j.region}`.toLowerCase();
-  if (words.some(w => blob.includes(w))) return false;
-  if (incl.length && !incl.some(w => blob.includes(w))) return false;
-  if (state.q && !blob.includes(state.q)) return false;
+  // 제외단어와 검색은 지금까지처럼 회사·제목·지역만 봅니다. 본문까지 보면
+  // "구로" 같은 지역 제외어가 본문 한 줄에 걸려 멀쩡한 공고가 통째로 날아갑니다.
+  const head = headBlob(j);
+  if (words.some(w => head.includes(w))) return false;
+  if (state.q && !head.includes(state.q)) return false;
+  // 포함단어만 스킬·본문까지 훑습니다. 제목에 안 적힌 기술스택을 찾기 위한 칸입니다.
+  if (incl.length && !incl.some(w => fullBlob(j).includes(w))) return false;
   return true;
 }
 
@@ -552,16 +571,22 @@ function evaluate(j){
   const incl = includeWords();
   if (incl.length){
     max += 2;
-    const blob = `${j.company} ${j.title} ${j.region}`.toLowerCase();
-    const hit = incl.filter(w => blob.includes(w));
+    const head = headBlob(j), skill = (j.stack || "").toLowerCase();
+    const hit = incl.filter(w => fullBlob(j).includes(w));
     if (hit.length){
       score += Math.min(hit.length, 2);
-      add("포함단어", "good", hit.join(", ") + " 언급");
-      pros.push(hit.join("·") + " 언급");
+      // 어디서 걸렸는지까지 알려줘야 "제목만 스친 건지 스킬에 박힌 건지" 구분이 됩니다.
+      const where = hit.some(w => skill.includes(w)) ? "스킬"
+        : hit.some(w => head.includes(w)) ? "제목" : "본문";
+      add("포함단어", "good", `${hit.join(", ")} — ${where}에 있음`);
+      pros.push(`${hit.join("·")} ${where} 일치`);
     } else {
-      add("포함단어", "bad", "고른 단어가 공고명에 없음");
+      add("포함단어", "bad", "고른 단어가 공고 어디에도 없음");
       cons.push("찾는 키워드가 안 보임");
     }
+  } else if (!j.stack && !j.body){
+    // 스킬도 본문도 없는 공고는 포함단어를 켜면 불리해집니다. 미리 알려줍니다.
+    add("스킬", "na", "스킬 정보 없음 — 제목으로만 판단됨");
   }
 
   // 마감 여유는 필터가 아니어도 지원 가능성에 직접 영향을 줍니다.
@@ -623,6 +648,7 @@ function card(j){
   const meta = el("div", "meta");
   if (j.region)   meta.appendChild(el("span", null, "📍 " + j.region));
   if (j.career)   meta.appendChild(el("span", null, "👤 " + j.career));
+  if (j.stack)    meta.appendChild(el("span", null, "🧩 " + j.stack));
   if (j.deadline) meta.appendChild(el("span", null, "🗓 " + j.deadline));
   if (j.posted)   meta.appendChild(el("span", null, (j.postedReal ? "등록 " : "발견 ") + j.posted));
   if (j.dupSources.length) meta.appendChild(el("span", null, "중복: " + j.dupSources.join(", ")));
