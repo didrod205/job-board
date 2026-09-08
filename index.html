@@ -218,6 +218,7 @@
   .badge.soon{background:var(--warn-soft); color:var(--warn)}
   .badge.fit{background:var(--new-soft); color:var(--new)}
   .badge.nofit{background:#fee2e2; color:#b91c1c}
+  .badge.over{background:var(--line); color:var(--muted); text-decoration:line-through}
   .title{font-size:15.5px; font-weight:600; letter-spacing:-.01em; margin:0 0 7px; overflow-wrap:anywhere}
   .meta{display:flex; gap:4px 14px; flex-wrap:wrap; font-size:12.5px; color:var(--muted)}
   /* 비교함: 고른 공고를 나란히 놓고 필터 기준으로 항목별 평가 */
@@ -358,6 +359,7 @@
       </div>
     </div>
     <div class="fgroup"><span class="lbl">등록</span><div class="chips" id="f-period"></div></div>
+    <div class="fgroup"><span class="lbl">마감</span><div class="chips" id="f-due"></div></div>
     <div class="fgroup">
       <label class="lbl" for="include">포함되는 단어</label>
       <div class="chips" id="f-stack"></div>
@@ -463,6 +465,8 @@ const DEFAULT_YEARS_ON = false;
 const DEFAULT_YEAR_MIN = 1;
 const DEFAULT_YEAR_MAX = 5;
 const DEFAULT_PERIOD = 30;
+// 이미 마감된 공고는 지원할 수 없으니 처음엔 숨깁니다. 칩을 끄면 다시 보입니다.
+const DEFAULT_HIDE_OVER = true;
 const STACKS = ["react", "typescript", "next.js"];
 const DEFAULT_STACKS = ["react", "typescript"];
 // 내 기술 궁합. 비교함 채점과 "내 스택 맞춤순" 정렬에 씁니다.
@@ -505,6 +509,7 @@ const state = {
   },
   stacks: new Set(DEFAULT_STACKS),
   period: prefs.period === undefined ? DEFAULT_PERIOD : prefs.period,
+  hideOver: prefs.hideOver === undefined ? DEFAULT_HIDE_OVER : prefs.hideOver,
   include: prefs.include === undefined ? DEFAULT_INCLUDE : prefs.include,
   myStack: prefs.myStack === undefined ? DEFAULT_MY_STACK : prefs.myStack,
   avoid: prefs.avoid === undefined ? DEFAULT_AVOID : prefs.avoid,
@@ -626,6 +631,9 @@ const periodChips = [];
   periodChips.push(b);
 });
 
+const hideOverChip = chip(document.getElementById("f-due"), "마감 지난 공고 숨기기",
+  state.hideOver, on => { state.hideOver = on; savePrefs(); });
+
 const includeInput = document.getElementById("include");
 includeInput.value = state.include;
 includeInput.oninput = e => { state.include = e.target.value; savePrefs(); renderSoon(); };
@@ -662,6 +670,8 @@ document.getElementById("reset").onclick = () => {
   // 내 주력/안 맞는 스택은 프로필이라 초기화에서 건드리지 않습니다.
   state.hideAvoid = false;
   hideAvoidChip.setAttribute("aria-pressed", "false");
+  state.hideOver = false;
+  hideOverChip.setAttribute("aria-pressed", "false");
   document.getElementById("q").value = "";
   includeInput.value = "";
 
@@ -687,6 +697,7 @@ function refreshChips(){
   periodChips.forEach(c =>
     c.setAttribute("aria-pressed", String(Number(c.dataset.days) === state.period)));
   hideAvoidChip.setAttribute("aria-pressed", String(state.hideAvoid));
+  hideOverChip.setAttribute("aria-pressed", String(state.hideOver));
   document.getElementById("sort").value = state.sort;
   document.getElementById("q").value = state.q;
   includeInput.value = state.include;
@@ -702,7 +713,7 @@ function currentFilter(){
     careers: [...state.careers], stacks: [...state.stacks],
     years: {...state.years},
     period: state.period, include: state.include, exclude: state.exclude,
-    hideAvoid: state.hideAvoid,
+    hideAvoid: state.hideAvoid, hideOver: state.hideOver,
   };
 }
 
@@ -725,6 +736,8 @@ function applyFilter(f){
   state.include = f.include || "";
   state.exclude = f.exclude || "";
   state.hideAvoid = !!f.hideAvoid;
+  // 예전에 저장한 필터에는 이 항목이 없습니다. 없으면 기본값(숨김)으로 둡니다.
+  state.hideOver = f.hideOver === undefined ? DEFAULT_HIDE_OVER : !!f.hideOver;
   refreshChips();
 }
 
@@ -785,7 +798,7 @@ document.getElementById("savePreset").onclick = () => {
 function savePrefs(){
   store.write(KEY_PREFS, {period: state.period, include: state.include, exclude: state.exclude,
                           myStack: state.myStack, avoid: state.avoid,
-                          hideAvoid: state.hideAvoid,
+                          hideAvoid: state.hideAvoid, hideOver: state.hideOver,
                           yearsOn: state.years.on,
                           yearMin: state.years.min, yearMax: state.years.max});
 }
@@ -965,6 +978,68 @@ function wordRe(word){
   return re;
 }
 
+// ── 마감일 ────────────────────────────────────
+// 공고에는 "08/21"처럼 연도가 없는 마감일이 옵니다. 목록을 만들 때 그 날짜가 이미
+// 지났으면 내년으로 넘겨버려서, 8월에 올라온 공고가 "08/21 (D-348) — 준비할 시간
+// 여유"로 보였습니다. 마감일이 등록일보다 앞설 수는 없으니 등록일 기준으로 가장
+// 이른 연도를 다시 고릅니다. 남은 날짜도 목록을 만든 날이 아니라 오늘로 다시 셉니다.
+const DAY = 86400000;
+const ALWAYS_OPEN = 99999998;   // 상시채용
+const NO_DUE = 99999999;        // 마감 정보 없음
+
+const today = new Date(); today.setHours(0, 0, 0, 0);
+// "오늘마감 / 내일마감"에는 날짜가 없습니다. 목록을 만든 날이 기준입니다.
+const madeOn = (() => {
+  const d = new Date(String(DATA.generatedAt || "").replace(" ", "T"));
+  if (isNaN(d)) return new Date(today);
+  d.setHours(0, 0, 0, 0);
+  return d;
+})();
+
+const mmdd = (d) =>
+  String(d.getMonth() + 1).padStart(2, "0") + "/" + String(d.getDate()).padStart(2, "0");
+
+const dueCache = new WeakMap();
+function due(j){
+  let v = dueCache.get(j);
+  if (v) return v;
+
+  const text = j.deadline || "";
+  let date = null;
+
+  if (j.deadlineKey && j.deadlineKey < ALWAYS_OPEN){
+    const m = Math.floor(j.deadlineKey / 100) % 100, d = j.deadlineKey % 100;
+    const posted = new Date(String(j.posted || "") + "T00:00:00");
+    let y = Math.floor(j.deadlineKey / 10000);
+    if (!isNaN(posted)){
+      y = posted.getFullYear();
+      if (new Date(y, m - 1, d) < posted) y += 1;
+    }
+    date = new Date(y, m - 1, d);
+  } else if (/오늘\s*마감/.test(text)){
+    date = new Date(madeOn);
+  } else if (/내일\s*마감/.test(text)){
+    date = new Date(madeOn.getTime() + DAY);
+  }
+
+  if (!date){
+    // 상시채용이거나 마감 정보가 없는 공고. 그대로 둡니다.
+    v = {key: j.deadlineKey || NO_DUE, left: null, over: false,
+         always: j.deadlineKey === ALWAYS_OPEN, text};
+  } else {
+    const left = Math.round((date - today) / DAY);
+    v = {
+      key: date.getFullYear() * 10000 + (date.getMonth() + 1) * 100 + date.getDate(),
+      left, over: left < 0, always: false,
+      text: left < 0  ? `${mmdd(date)} 마감됨`
+          : left === 0 ? `${mmdd(date)} (오늘 마감)`
+          :              `${mmdd(date)} (D-${left})`,
+    };
+  }
+  dueCache.set(j, v);
+  return v;
+}
+
 // 공고가 요구하는 기술과 내 기술의 궁합.
 // 카드 배지·맞춤순 정렬·비교 채점이 전부 이걸 부르므로 공고당 한 번만 계산해 둡니다.
 // 내 주력/안 맞는 스택을 고치면 그때 캐시를 통째로 버리고 다시 셉니다.
@@ -1001,6 +1076,7 @@ function match(j, words, incl){
     if (!okTag && !okYear) return false;
   }
   if (state.period && j.age > state.period) return false;
+  if (state.hideOver && due(j).over) return false;
   if (state.hideAvoid && fitOf(j).bad.length) return false;
 
   // 제외단어와 검색은 지금까지처럼 회사·제목·지역만 봅니다. 본문까지 보면
@@ -1059,7 +1135,12 @@ function sortRows(rows){
     rows.sort((a, b) => key.get(b) - key.get(a) || a.age - b.age);
   }
   else if (state.sort === "posted") rows.sort((a, b) => a.age - b.age);
-  else rows.sort((a, b) => a.deadlineKey - b.deadlineKey || byKo(a.company, b.company));
+  else {
+    // 마감임박순. 이미 지난 공고는 급할 게 없으므로 상시채용보다도 뒤로 보냅니다.
+    const key = new Map();
+    rows.forEach(j => { const dd = due(j); key.set(j, dd.over ? NO_DUE + 1 : dd.key); });
+    rows.sort((a, b) => key.get(a) - key.get(b) || byKo(a.company, b.company));
+  }
   return rows;
 }
 
@@ -1158,12 +1239,13 @@ function evaluate(j){
 
   // 마감 여유는 필터가 아니어도 지원 가능성에 직접 영향을 줍니다.
   max += 1.5;
-  const left = Number((j.deadline.match(/D-(\d+)/) || [])[1]);
-  if (j.deadline.includes("상시")){ score += 1.5; add("마감", "good", "상시채용 — 마감 압박 없음"); pros.push("상시채용"); }
-  else if (left >= 14){ score += 1.5; add("마감", "good", `${j.deadline} — 준비할 시간 여유`); }
-  else if (left >= 4){ score += 1; add("마감", "ok", j.deadline); }
-  else if (j.deadline){ add("마감", "bad", `${j.deadline} — 서둘러야 함`); cons.push("마감이 임박"); }
-  else { add("마감", "na", "마감 정보 없음"); }
+  const dd = due(j);
+  if (dd.always){ score += 1.5; add("마감", "good", "상시채용 — 마감 압박 없음"); pros.push("상시채용"); }
+  else if (dd.over){ add("마감", "bad", `${dd.text} — 이미 지났습니다`); cons.push("이미 마감된 공고"); }
+  else if (dd.left === null){ add("마감", "na", "마감 정보 없음"); }
+  else if (dd.left >= 14){ score += 1.5; add("마감", "good", `${dd.text} — 준비할 시간 여유`); }
+  else if (dd.left >= 4){ score += 1; add("마감", "ok", dd.text); }
+  else { add("마감", "bad", `${dd.text} — 서둘러야 함`); cons.push("마감이 임박"); }
 
   // 여러 사이트에 동시에 올린 공고는 그만큼 사람을 급히 찾는다는 신호로 봅니다.
   if (j.dupSources.length){
@@ -1247,8 +1329,9 @@ function card(j){
   if (j.isNew) top.appendChild(el("span", "badge new", "NEW"));
   top.appendChild(el("span", "badge src", j.sourceLabel));
   j.roles.filter(r => r !== "기타").forEach(r => top.appendChild(el("span", "badge role", r)));
-  const left = Number((j.deadline.match(/D-(\d+)/) || [])[1]);
-  if (left && left <= 7) top.appendChild(el("span", "badge soon", "마감임박"));
+  const dd = due(j);
+  if (dd.over) top.appendChild(el("span", "badge over", "마감"));
+  else if (dd.left !== null && dd.left <= 7) top.appendChild(el("span", "badge soon", "마감임박"));
   // 훑어볼 때 바로 눈에 띄도록 궁합을 배지로 답니다.
   const fit = fitOf(j);
   if (fit.hits.length) top.appendChild(el("span", "badge fit", "내 스택 " + fit.hits.length));
@@ -1261,7 +1344,7 @@ function card(j){
   if (j.region)   meta.appendChild(el("span", null, "📍 " + j.region));
   if (j.career)   meta.appendChild(el("span", null, "👤 " + j.career));
   if (j.stack)    meta.appendChild(el("span", null, "🧩 " + j.stack));
-  if (j.deadline) meta.appendChild(el("span", null, "🗓 " + j.deadline));
+  if (dd.text)    meta.appendChild(el("span", null, "🗓 " + dd.text));
   if (j.posted)   meta.appendChild(el("span", null, (j.postedReal ? "등록 " : "발견 ") + j.posted));
   if (j.dupSources.length) meta.appendChild(el("span", null, "중복: " + j.dupSources.join(", ")));
   a.appendChild(meta);
@@ -1677,7 +1760,8 @@ function updateBar(rows = shownRows){
     (state.include.trim() ? 1 : 0) +
     (state.exclude.trim() ? 1 : 0) +
     (state.q ? 1 : 0) +
-    (state.hideAvoid ? 1 : 0);
+    (state.hideAvoid ? 1 : 0) +
+    (state.hideOver ? 1 : 0);
   const badge = document.getElementById("fabCount");
   badge.textContent = active || "";
   badge.style.display = active ? "" : "none";
