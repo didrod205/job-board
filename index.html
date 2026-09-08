@@ -50,6 +50,12 @@
   .fgroup>.lbl{display:block; font-size:12px; font-weight:600; color:var(--muted); margin-bottom:6px}
   .chips{display:flex; gap:6px; flex-wrap:wrap}
   .fgroup .chips+input{margin-top:6px}
+  /* 경력 연차 범위. "경력" 칩을 켜면 진해지고, 숫자를 고치면 알아서 켜집니다. */
+  .yrs{display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px; color:var(--muted)}
+  .yrs input[type=number]{width:58px; text-align:center; padding:7px 4px; -moz-appearance:textfield}
+  .yrs input::-webkit-outer-spin-button,
+  .yrs input::-webkit-inner-spin-button{-webkit-appearance:none; margin:0}
+  .yrs.off{opacity:.45}
   input[type=search],input[type=text],select{
     font:inherit; font-size:14px; color:inherit; background:var(--card);
     border:1px solid var(--line); border-radius:9px; padding:9px 12px;
@@ -75,6 +81,13 @@
 
   .sync{margin-top:22px; padding-top:16px; border-top:1px solid var(--line)}
   .sync .hint{margin:0 0 9px; font-size:11.5px; color:var(--muted); line-height:1.6}
+  .sync .state{margin:0 0 4px; font-size:13px; font-weight:700; color:var(--muted)}
+  .sync .state.on{color:var(--new)}
+  .sync .step{margin:16px 0 6px; font-size:11.5px; font-weight:600; color:var(--muted)}
+  .sync input.code{
+    font-size:15px; font-weight:600; letter-spacing:.06em; text-align:center; margin-bottom:8px;
+  }
+  #syncMsg{margin-top:10px}
   .sync .btn{width:100%}
   .sync input{margin-bottom:8px}
   .syncrow{display:flex; gap:8px; margin-bottom:8px}
@@ -184,6 +197,8 @@
   .count b{color:var(--fg)}
 
   ul{list-style:none; margin:0; padding:0; display:grid; gap:10px}
+  /* 목록 끝을 표시하는 자리. 여기가 화면에 들어오면 다음 묶음을 이어 그립니다. */
+  .tail{height:1px}
   li.item{display:flex; gap:10px; align-items:flex-start}
   li.item>input[type=checkbox]{margin:18px 0 0; width:18px; height:18px; flex:none; accent-color:var(--accent)}
   a.card{
@@ -331,7 +346,17 @@
     </div>
     <div class="fgroup"><span class="lbl">직군</span><div class="chips" id="f-role"></div></div>
     <div class="fgroup"><span class="lbl">지역</span><div class="chips" id="f-region"></div></div>
-    <div class="fgroup"><span class="lbl">경력</span><div class="chips" id="f-career"></div></div>
+    <div class="fgroup">
+      <span class="lbl">경력</span>
+      <div class="chips" id="f-career"></div>
+      <div class="yrs off" id="yearsRow">
+        <span>경력</span>
+        <input type="number" id="yearMin" min="0" max="30" step="1" inputmode="numeric" aria-label="최소 경력">
+        <span>~</span>
+        <input type="number" id="yearMax" min="0" max="30" step="1" inputmode="numeric" aria-label="최대 경력">
+        <span>년</span>
+      </div>
+    </div>
     <div class="fgroup"><span class="lbl">등록</span><div class="chips" id="f-period"></div></div>
     <div class="fgroup">
       <label class="lbl" for="include">포함되는 단어</label>
@@ -433,6 +458,10 @@ const DEFAULT_INCLUDE = "";
 const DEFAULT_REGIONS = ["서울시", "성남시", "하남시"];
 const DEFAULT_ROLES = ["프론트엔드"];
 const DEFAULT_CAREERS = ["신입"];
+// 경력 연차는 "몇 년 이상 요구하는 공고까지 볼지"입니다. 공고의 minYears로 거릅니다.
+const DEFAULT_YEARS_ON = false;
+const DEFAULT_YEAR_MIN = 1;
+const DEFAULT_YEAR_MAX = 5;
 const DEFAULT_PERIOD = 30;
 const STACKS = ["react", "typescript", "next.js"];
 const DEFAULT_STACKS = ["react", "typescript"];
@@ -469,6 +498,11 @@ const state = {
   roles: new Set(DEFAULT_ROLES),
   regions: new Set(DEFAULT_REGIONS),
   careers: new Set(DEFAULT_CAREERS),
+  years: {
+    on:  prefs.yearsOn  === undefined ? DEFAULT_YEARS_ON  : prefs.yearsOn,
+    min: prefs.yearMin  === undefined ? DEFAULT_YEAR_MIN  : prefs.yearMin,
+    max: prefs.yearMax  === undefined ? DEFAULT_YEAR_MAX  : prefs.yearMax,
+  },
   stacks: new Set(DEFAULT_STACKS),
   period: prefs.period === undefined ? DEFAULT_PERIOD : prefs.period,
   include: prefs.include === undefined ? DEFAULT_INCLUDE : prefs.include,
@@ -481,6 +515,14 @@ const state = {
 
 // 메모는 공고가 아니라서 URL이 없습니다. 자기 id를 먼저 봅니다.
 const idOf = (j) => j.mid || j.url || (j.company + "|" + j.title);
+
+// 글자를 한 자 칠 때마다 목록을 통째로 다시 그리면 입력이 밀립니다. 상태는 그대로
+// 즉시 반영하고, 다시 그리는 것만 마지막 입력 뒤로 잠깐 모읍니다. 결과는 같습니다.
+let drawTimer = null;
+function renderSoon(){
+  clearTimeout(drawTimer);
+  drawTimer = setTimeout(() => { drawTimer = null; render(); }, 120);
+}
 
 document.getElementById("sub").textContent =
   `${DATA.generatedAt} 기준 · 전체 ${DATA.jobs.length}건 · ${DATA.master}`;
@@ -505,20 +547,58 @@ function chip(parent, label, pressed, on, quiet){
 }
 
 // ── 필터 칩 ────────────────────────────────────
-const ROLE_ORDER = ["프론트엔드", "퍼블리셔", "백엔드", "웹/풀스택", "앱", "데이터/AI", "기타"];
-const roleChips = ROLE_ORDER.filter(r => DATA.jobs.some(j => j.roles.includes(r)))
+// 어떤 직군·지역이 실제로 있는지는 목록을 한 번만 훑어 모읍니다.
+const HAVE_ROLE = new Set(), HAVE_REGION = new Set();
+DATA.jobs.forEach(j => {
+  j.roles.forEach(r => HAVE_ROLE.add(r));
+  HAVE_REGION.add(j.regionGroup);
+});
+
+const ROLE_ORDER = ["프론트엔드", "퍼블리셔"];
+const roleChips = ROLE_ORDER.filter(r => HAVE_ROLE.has(r))
   .map(r => chip(document.getElementById("f-role"), r, DEFAULT_ROLES.includes(r),
     on => on ? state.roles.add(r) : state.roles.delete(r)));
 
 // 서울시·성남시·하남시는 처음부터 켜둡니다. 켠 지역만 보여주는 화이트리스트로 동작합니다.
 const REGION_ORDER = [...DEFAULT_REGIONS, "그 외"];
-const regionChips = REGION_ORDER.filter(r => DATA.jobs.some(j => j.regionGroup === r))
+const regionChips = REGION_ORDER.filter(r => HAVE_REGION.has(r))
   .map(r => chip(document.getElementById("f-region"), r, DEFAULT_REGIONS.includes(r),
     on => on ? state.regions.add(r) : state.regions.delete(r)));
 
-const careerChips = ["신입", "1~3년", "경력무관"]
+// "1~3년" 고정 칩 대신 연차를 직접 적습니다. 칩은 그 범위를 켜고 끄는 스위치입니다.
+const careerChips = ["신입", "경력무관"]
   .map(c => chip(document.getElementById("f-career"), c, DEFAULT_CAREERS.includes(c),
     on => on ? state.careers.add(c) : state.careers.delete(c)));
+
+const yearsRow = document.getElementById("yearsRow");
+const yearMinInput = document.getElementById("yearMin");
+const yearMaxInput = document.getElementById("yearMax");
+
+const yearsChip = chip(document.getElementById("f-career"), "경력", state.years.on, on => {
+  state.years.on = on;
+  yearsRow.classList.toggle("off", !on);
+  savePrefs();
+});
+
+// 숫자를 고치면 "이 조건을 쓰겠다"는 뜻이므로 칩도 같이 켭니다.
+function readYears(){
+  const lo = Math.max(0, Math.min(30, Math.round(Number(yearMinInput.value)) || 0));
+  const hi = Math.max(0, Math.min(30, Math.round(Number(yearMaxInput.value)) || 0));
+  // 거꾸로 적어도 뒤집어서 씁니다. 입력 도중에 결과가 0건이 되는 걸 막습니다.
+  state.years.min = Math.min(lo, hi);
+  state.years.max = Math.max(lo, hi);
+  if (!state.years.on){
+    state.years.on = true;
+    yearsChip.setAttribute("aria-pressed", "true");
+    yearsRow.classList.remove("off");
+  }
+  savePrefs(); renderSoon();
+}
+yearMinInput.value = state.years.min;
+yearMaxInput.value = state.years.max;
+yearsRow.classList.toggle("off", !state.years.on);
+yearMinInput.oninput = readYears;
+yearMaxInput.oninput = readYears;
 
 // 포함단어 입력칸을 대신하는 단축 칩. 켜면 그 단어가 포함단어 목록에 더해집니다.
 const stackChips = STACKS.map(s =>
@@ -548,15 +628,15 @@ const periodChips = [];
 
 const includeInput = document.getElementById("include");
 includeInput.value = state.include;
-includeInput.oninput = e => { state.include = e.target.value; savePrefs(); render(); };
+includeInput.oninput = e => { state.include = e.target.value; savePrefs(); renderSoon(); };
 
 const myStackInput = document.getElementById("myStack");
 myStackInput.value = state.myStack;
-myStackInput.oninput = e => { state.myStack = e.target.value; savePrefs(); render(); };
+myStackInput.oninput = e => { state.myStack = e.target.value; savePrefs(); renderSoon(); };
 
 const avoidInput = document.getElementById("avoid");
 avoidInput.value = state.avoid;
-avoidInput.oninput = e => { state.avoid = e.target.value; savePrefs(); render(); };
+avoidInput.oninput = e => { state.avoid = e.target.value; savePrefs(); renderSoon(); };
 
 // 제외할 단어는 회사·제목·지역만 보고 단어 경계도 없어서, 스택을 거르는 데는
 // 못 씁니다("java"가 "javascript"에 걸립니다). 스택 전용 스위치를 따로 둡니다.
@@ -565,9 +645,9 @@ const hideAvoidChip = chip(document.getElementById("f-avoid"), "안 맞는 공�
 
 const excludeInput = document.getElementById("exclude");
 excludeInput.value = state.exclude;
-excludeInput.oninput = e => { state.exclude = e.target.value; savePrefs(); render(); };
+excludeInput.oninput = e => { state.exclude = e.target.value; savePrefs(); renderSoon(); };
 
-document.getElementById("q").oninput = e => { state.q = e.target.value.trim().toLowerCase(); render(); };
+document.getElementById("q").oninput = e => { state.q = e.target.value.trim().toLowerCase(); renderSoon(); };
 document.getElementById("sort").onchange = e => { state.sort = e.target.value; render(); };
 
 // 초기화는 "조건 없이 전부 보기"로 되돌립니다. 제외할 단어만 그대로 둡니다
@@ -577,6 +657,7 @@ document.getElementById("reset").onclick = () => {
   state.regions.clear();
   state.careers.clear();
   state.stacks.clear();
+  state.years.on = false;
   state.q = ""; state.period = 0; state.include = "";
   // 내 주력/안 맞는 스택은 프로필이라 초기화에서 건드리지 않습니다.
   state.hideAvoid = false;
@@ -599,6 +680,10 @@ function refreshChips(){
   press(regionChips, state.regions);
   press(careerChips, state.careers);
   press(stackChips, state.stacks);
+  yearsChip.setAttribute("aria-pressed", String(state.years.on));
+  yearsRow.classList.toggle("off", !state.years.on);
+  yearMinInput.value = state.years.min;
+  yearMaxInput.value = state.years.max;
   periodChips.forEach(c =>
     c.setAttribute("aria-pressed", String(Number(c.dataset.days) === state.period)));
   hideAvoidChip.setAttribute("aria-pressed", String(state.hideAvoid));
@@ -615,6 +700,7 @@ function currentFilter(){
     sort: state.sort,
     roles: [...state.roles], regions: [...state.regions],
     careers: [...state.careers], stacks: [...state.stacks],
+    years: {...state.years},
     period: state.period, include: state.include, exclude: state.exclude,
     hideAvoid: state.hideAvoid,
   };
@@ -625,6 +711,15 @@ function applyFilter(f){
   state.roles = new Set(f.roles || []);
   state.regions = new Set(f.regions || []);
   state.careers = new Set(f.careers || []);
+  // 예전에 저장한 필터에는 없어진 "1~3년" 같은 칩이 남아 있을 수 있습니다.
+  // 그대로 두면 끌 칩이 없는데 조건은 걸려 결과가 0건이 됩니다.
+  syncToChips(state.careers, careerChips);
+  const yr = f.years || {};
+  state.years = {
+    on: !!yr.on,
+    min: yr.min === undefined ? DEFAULT_YEAR_MIN : yr.min,
+    max: yr.max === undefined ? DEFAULT_YEAR_MAX : yr.max,
+  };
   state.stacks = new Set(f.stacks || []);
   state.period = f.period || 0;
   state.include = f.include || "";
@@ -690,7 +785,9 @@ document.getElementById("savePreset").onclick = () => {
 function savePrefs(){
   store.write(KEY_PREFS, {period: state.period, include: state.include, exclude: state.exclude,
                           myStack: state.myStack, avoid: state.avoid,
-                          hideAvoid: state.hideAvoid});
+                          hideAvoid: state.hideAvoid,
+                          yearsOn: state.years.on,
+                          yearMin: state.years.min, yearMax: state.years.max});
 }
 
 // ── 탭 ────────────────────────────────────────
@@ -827,8 +924,24 @@ document.getElementById("selectAll").onclick = () => {
 };
 
 // ── 필터 ──────────────────────────────────────
-const headBlob = (j) => `${j.company} ${j.title} ${j.region}`.toLowerCase();
-const fullBlob = (j) => `${headBlob(j)} ${j.stack || ""} ${j.body || ""}`.toLowerCase();
+// 검색용 소문자 문자열은 공고당 한 번만 만들어 들고 있습니다. 매번 새로 만들면
+// 글자 하나 칠 때마다 7천 건어치 문자열이 다시 생겨 입력이 눈에 띄게 밀립니다.
+const blobCache = new WeakMap();
+function blobs(j){
+  let b = blobCache.get(j);
+  if (!b){
+    const head = `${j.company} ${j.title} ${j.region}`.toLowerCase();
+    b = {head, full: `${head} ${j.stack || ""} ${j.body || ""}`.toLowerCase()};
+    blobCache.set(j, b);
+  }
+  return b;
+}
+const headBlob = (j) => blobs(j).head;
+const fullBlob = (j) => blobs(j).full;
+
+// localeCompare는 부를 때마다 로케일을 새로 잡습니다. 정렬은 비교를 수만 번 하므로
+// 미리 만들어둔 비교기를 씁니다. 정렬 결과는 같습니다.
+const byKo = new Intl.Collator("ko").compare;
 
 function splitWords(text){
   return text.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -853,21 +966,40 @@ function wordRe(word){
 }
 
 // 공고가 요구하는 기술과 내 기술의 궁합.
+// 카드 배지·맞춤순 정렬·비교 채점이 전부 이걸 부르므로 공고당 한 번만 계산해 둡니다.
+// 내 주력/안 맞는 스택을 고치면 그때 캐시를 통째로 버리고 다시 셉니다.
+let fitCache = new WeakMap();
+let fitGen = null, fitMine = [], fitNope = [];
 function fitOf(j){
+  const gen = state.myStack + "\u0000" + state.avoid;
+  if (gen !== fitGen){
+    fitGen = gen;
+    fitCache = new WeakMap();
+    fitMine = splitWords(state.myStack);
+    fitNope = splitWords(state.avoid);
+  }
+  let f = fitCache.get(j);
+  if (f) return f;
   const text = ` ${j.stack || ""} ${j.body || ""} ${j.title} `.toLowerCase();
-  const mine = splitWords(state.myStack);
-  const nope = splitWords(state.avoid);
-  return {
-    hits: mine.filter(w => wordRe(w).test(text)),
-    bad: nope.filter(w => wordRe(w).test(text)),
+  f = {
+    hits: fitMine.filter(w => wordRe(w).test(text)),
+    bad: fitNope.filter(w => wordRe(w).test(text)),
   };
+  fitCache.set(j, f);
+  return f;
 }
 
 function match(j, words, incl){
   if (state.roles.size && !j.roles.some(r => state.roles.has(r))) return false;
   // 직군·경력과 같은 규칙입니다. 아무것도 안 켜면 지역 제한 없음.
   if (state.regions.size && !state.regions.has(j.regionGroup)) return false;
-  if (state.careers.size && !j.careerTags.some(c => state.careers.has(c))) return false;
+  // 신입·경력무관 칩과 연차 범위는 서로 OR입니다. 하나도 안 켜면 경력 제한 없음.
+  if (state.careers.size || state.years.on){
+    const okTag = state.careers.size && j.careerTags.some(c => state.careers.has(c));
+    const okYear = state.years.on &&
+      j.minYears >= state.years.min && j.minYears <= state.years.max;
+    if (!okTag && !okYear) return false;
+  }
   if (state.period && j.age > state.period) return false;
   if (state.hideAvoid && fitOf(j).bad.length) return false;
 
@@ -888,7 +1020,7 @@ function visible(){
     const hidden = new Set(blacklist.map(idOf));
     const rows = compared.filter(j => !hidden.has(idOf(j)));
     rows.forEach(j => { j._ev = evaluate(j); });
-    rows.sort((a, b) => b._ev.pct - a._ev.pct || a.company.localeCompare(b.company, "ko"));
+    rows.sort((a, b) => b._ev.pct - a._ev.pct || byKo(a.company, b.company));
     return rows;
   }
   // 메모장: 고정한 것부터, 그다음 최근 수정순.
@@ -918,14 +1050,16 @@ function visible(){
 }
 
 function sortRows(rows){
-  if (state.sort === "company") rows.sort((a, b) => a.company.localeCompare(b.company, "ko"));
+  if (state.sort === "company") rows.sort((a, b) => byKo(a.company, b.company));
   else if (state.sort === "fit"){
     // 내 스택이 많이 겹치는 것부터. 안 맞는 스택이 걸리면 뒤로 보냅니다.
-    const key = (j) => { const f = fitOf(j); return f.hits.length - f.bad.length * 2; };
-    rows.sort((a, b) => key(b) - key(a) || a.age - b.age);
+    // 점수는 비교할 때마다 매기지 않고 미리 한 번씩만 매겨둡니다.
+    const key = new Map();
+    rows.forEach(j => { const f = fitOf(j); key.set(j, f.hits.length - f.bad.length * 2); });
+    rows.sort((a, b) => key.get(b) - key.get(a) || a.age - b.age);
   }
   else if (state.sort === "posted") rows.sort((a, b) => a.age - b.age);
-  else rows.sort((a, b) => a.deadlineKey - b.deadlineKey || a.company.localeCompare(b.company, "ko"));
+  else rows.sort((a, b) => a.deadlineKey - b.deadlineKey || byKo(a.company, b.company));
   return rows;
 }
 
@@ -956,11 +1090,17 @@ function evaluate(j){
     add("지역", "na", j.region || j.regionGroup);
   }
 
-  if (state.careers.size){
+  if (state.careers.size || state.years.on){
     max += 2;
     const hit = j.careerTags.filter(c => state.careers.has(c));
-    if (hit.length){ score += 2; add("경력", "good", (j.career || hit.join(", ")) + " — 지원 가능"); pros.push("경력 조건 맞음"); }
-    else {
+    const inYears = state.years.on &&
+      j.minYears >= state.years.min && j.minYears <= state.years.max;
+    if (hit.length || inYears){
+      score += 2;
+      const why = hit.length ? hit.join(", ") : `${state.years.min}~${state.years.max}년 범위`;
+      add("경력", "good", (j.career || why) + " — 지원 가능");
+      pros.push("경력 조건 맞음");
+    } else {
       add("경력", "bad", (j.career || "경력 조건 미표기") + " — 고른 조건과 안 맞음");
       cons.push(j.career ? "경력 요건이 높음" : "경력 조건이 안 적혀 있음");
     }
@@ -1043,6 +1183,47 @@ function el(tag, cls, text){
   if (text != null) n.textContent = text;
   return n;
 }
+
+// 조건을 다 풀면 7천 건이 한꺼번에 걸립니다. 카드를 전부 만들면 DOM이 12만 개가 되어
+// 그리는 데만 1초 넘게 걸리므로, 화면에 들어오는 만큼만 이어서 만듭니다.
+// 목록(shownRows)은 늘 전부 들고 있으므로 전체선택·건수 표시는 그대로입니다.
+const listEl = document.getElementById("list");
+const tail = document.createElement("div");
+tail.className = "tail";
+listEl.after(tail);
+
+const CHUNK = 60;
+let shownRows = [];   // 지금 조건에 걸린 전체 목록 (그려졌는지와 무관)
+let drawn = 0;
+let drawCard = null;  // 지금 탭에 맞는 카드 만드는 함수
+
+function drawChunk(){
+  const upto = Math.min(drawn + CHUNK, shownRows.length);
+  const frag = document.createDocumentFragment();
+  for (let i = drawn; i < upto; i++) frag.appendChild(drawCard(shownRows[i]));
+  listEl.appendChild(frag);
+  drawn = upto;
+}
+
+// 목록 끝(tail)이 화면 가까이 오면 다음 묶음을 붙입니다. 한 묶음이면 화면 하나를
+// 채우고도 남으므로 보통 한두 번이면 끝납니다. guard는 카드 높이가 0으로 잡히는
+// 이상한 상황에서 무한히 도는 것만 막는 안전장치입니다.
+function fillDown(){
+  let guard = 0;
+  while (drawn < shownRows.length && guard++ < 20 &&
+         tail.getBoundingClientRect().top <= window.innerHeight + 800){
+    drawChunk();
+  }
+}
+
+new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) fillDown(); },
+  {rootMargin: "800px"}).observe(tail);
+// 관찰자가 다시 안 불릴 때(끝이 계속 화면에 걸쳐 있는 경우 등)를 대비한 보험.
+// 다 그린 뒤에는 아무것도 하지 않습니다.
+window.addEventListener("scroll", () => { if (drawn < shownRows.length) fillDown(); },
+  {passive: true});
+window.addEventListener("resize", () => { if (drawn < shownRows.length) fillDown(); },
+  {passive: true});
 
 function card(j){
   const li = el("li", "item");
@@ -1473,8 +1654,7 @@ function compareCard(j, best){
   return li;
 }
 
-function updateBar(){
-  const rows = visible();
+function updateBar(rows = shownRows){
   const picked = rows.filter(j => state.picked.has(idOf(j))).length;
   document.getElementById("count").innerHTML =
     `<b>${rows.length}</b>건 표시` +
@@ -1491,7 +1671,7 @@ function updateBar(){
   const active =
     (state.roles.size ? 1 : 0) +
     (state.regions.size ? 1 : 0) +
-    (state.careers.size ? 1 : 0) +
+    (state.careers.size || state.years.on ? 1 : 0) +
     (state.stacks.size ? 1 : 0) +
     (state.period ? 1 : 0) +
     (state.include.trim() ? 1 : 0) +
@@ -1504,19 +1684,26 @@ function updateBar(){
 }
 
 function render(){
+  // 예약해둔 다시 그리기가 있으면 여기서 같이 처리합니다.
+  clearTimeout(drawTimer); drawTimer = null;
+
   const rows = visible();
-  const list = document.getElementById("list");
   const cmp = state.view === "compare";
 
-  list.classList.toggle("compare", cmp);
+  listEl.classList.toggle("compare", cmp);
   // 동점이면 아무거나 1등으로 세우지 않습니다. 공동 1위는 다 같이 표시하고,
   // 전부 같은 점수라 우열이 없으면 배지를 아예 달지 않습니다.
   const top = cmp && rows.length > 1 ? rows[0]._ev.pct : -1;
   const tiedAll = cmp && rows.every(j => j._ev.pct === top);
-  list.replaceChildren(...(cmp
-    ? rows.map(j => compareCard(j, !tiedAll && j._ev.pct === top))
-    : state.view === "memo" ? rows.map(memoCard)
-    : rows.map(card)));
+  drawCard = cmp
+    ? (j) => compareCard(j, !tiedAll && j._ev.pct === top)
+    : state.view === "memo" ? memoCard : card;
+
+  shownRows = rows;
+  drawn = 0;
+  listEl.replaceChildren();
+  drawChunk();   // 첫 화면은 곧바로
+  fillDown();    // 화면이 덜 찼으면 이어서
 
   const empty = document.getElementById("empty");
   empty.hidden = rows.length > 0;
@@ -1532,7 +1719,7 @@ function render(){
         ? "블랙리스트가 비어 있습니다. 공고의 옵션에서 '블랙'을 누르면 목록에서 사라집니다."
         : "조건에 맞는 공고가 없습니다. 필터를 줄여보세요.";
 
-  updateBar();
+  updateBar(rows);
 }
 
 // ── 기기 간 옮기기 ────────────────────────────
@@ -1606,7 +1793,9 @@ function newCode(){
 async function syncPull(createIfMissing = true){
   const url = `${SYNC.url}/rest/v1/job_lists?code=eq.${encodeURIComponent(syncCode)}&select=*`;
   const res = await fetch(url, {headers: syncHeaders()});
-  if (!res.ok) throw new Error(`불러오기 실패 (${res.status})`);
+  if (!res.ok) throw new Error(res.status === 404
+    ? "동기화 서버를 찾지 못했습니다. 잠시 뒤 다시 눌러주세요."
+    : `목록을 받아오지 못했습니다. 잠시 뒤 다시 눌러주세요. (오류 ${res.status})`);
   const rows = await res.json();
   if (!rows.length){
     if (!createIfMissing){
@@ -1684,16 +1873,28 @@ async function syncPush(){
   if (syncHasExtra && res.status === 400){
     // 테이블에 extra 컬럼이 없는 경우. 저장·비교만이라도 계속 맞춥니다.
     syncHasExtra = false;
-    syncStatus("메모·지원완료는 동기화 안 됨 (테이블에 extra 컬럼 추가 필요)");
+    syncStatus("저장리스트·비교함만 맞춥니다. 메모와 지원완료는 서버 설정이 더 필요합니다.");
     return syncPush();
   }
-  throw new Error(`올리기 실패 (${res.status})`);
+  throw new Error(`목록을 올리지 못했습니다. 잠시 뒤 다시 눌러주세요. (오류 ${res.status})`);
 }
 
 function syncStatus(text){
   const node = document.getElementById("syncMsg");
   if (node) node.textContent = text;
 }
+
+// 브라우저가 주는 "Load failed" / "Failed to fetch" 같은 말은 무슨 뜻인지 알기 어렵습니다.
+// 무엇 때문에 안 됐는지 한국어로 바꿔서 보여줍니다.
+function sayError(e){
+  const raw = String((e && e.message) || e || "");
+  if (/[가-힣]/.test(raw)) return raw;                       // 이미 우리가 쓴 말이면 그대로
+  if (/load failed|failed to fetch|networkerror|network request/i.test(raw))
+    return "인터넷에 닿지 못했습니다. 연결을 확인하고 다시 눌러주세요.";
+  if (/abort/i.test(raw)) return "요청이 중간에 끊겼습니다. 다시 눌러주세요.";
+  return "동기화에 실패했습니다. 잠시 뒤 다시 눌러주세요.";
+}
+const showErr = (e) => syncStatus(sayError(e));
 
 // 담기/빼기가 연달아 일어나도 마지막 한 번만 올립니다.
 function syncSoon(){
@@ -1706,7 +1907,7 @@ function syncSoon(){
   syncStatus("올리는 중…");
   syncTimer = setTimeout(() => {
     syncTimer = null;
-    syncPush().then(() => syncStatus("동기화됨")).catch(e => syncStatus(e.message));
+    syncPush().then(() => syncStatus("맞춰졌습니다")).catch(showErr);
   }, 500);
 }
 
@@ -1744,25 +1945,28 @@ function renderSyncBox(){
   }
 
   if (syncCode){
+    // 연결된 상태 — 할 일은 "폰에 이 코드를 넣는 것" 하나뿐입니다.
+    box.appendChild(el("p", "state on", "연결됨"));
     box.appendChild(el("p", "hint",
-      "폰에서도 이 코드를 넣으면 담고 지운 게 자동으로 같아집니다."));
+      "폰에서도 아래 코드를 넣으면 저장리스트·비교함이 자동으로 같아집니다."));
+
     const code = document.createElement("input");
     code.type = "text"; code.readOnly = true; code.value = syncCode;
+    code.className = "code";
     code.setAttribute("aria-label", "동기화 코드");
     code.onclick = () => code.select();
     box.appendChild(code);
 
-    const row = el("div", "syncrow");
-    const copy = el("button", "btn ghost", "코드 복사");
+    const copy = el("button", "btn", "코드 복사");
     copy.onclick = async () => {
       try { await navigator.clipboard.writeText(syncCode); syncStatus("코드를 복사했습니다"); }
       catch (e) { code.select(); syncStatus("코드를 길게 눌러 복사하세요"); }
     };
-    const pull = el("button", "btn ghost", "지금 받아오기");
-    pull.onclick = () => syncPull().then(syncStatus).catch(e => syncStatus(e.message));
-    row.append(copy, pull);
-    box.appendChild(row);
+    box.appendChild(copy);
 
+    const row = el("div", "syncrow");
+    const pull = el("button", "btn ghost", "지금 받아오기");
+    pull.onclick = () => { syncStatus("받아오는 중…"); syncPull().then(syncStatus).catch(showErr); };
     const off = el("button", "btn ghost", "연결 끊기");
     off.onclick = () => {
       syncCode = "";
@@ -1770,33 +1974,42 @@ function renderSyncBox(){
       renderSyncBox();
       syncStatus("연결을 끊었습니다. 목록은 이 기기에 그대로 있습니다.");
     };
-    box.appendChild(off);
+    row.append(pull, off);
+    box.appendChild(row);
   } else {
+    // 연결 전 — 두 갈래뿐이라 순서대로 적어둡니다.
+    box.appendChild(el("p", "state", "연결 안 됨"));
     box.appendChild(el("p", "hint",
       "폰과 PC에서 같은 코드를 쓰면 저장리스트·비교함이 자동으로 같아집니다."));
+
+    box.appendChild(el("p", "step", "① 이 기기에서 처음 시작한다면"));
+    const make = el("button", "btn", "연결 코드 만들기");
+    make.onclick = () => {
+      syncCode = newCode(); store.write(KEY_CODE, syncCode);
+      renderSyncBox();
+      syncStatus("만드는 중…");
+      syncPush().then(() => syncStatus("준비됐습니다. 폰에 이 코드를 넣으세요."))
+        .catch(showErr);
+    };
+    box.appendChild(make);
+
+    box.appendChild(el("p", "step", "② 다른 기기에서 이미 만들었다면"));
     const input = document.createElement("input");
     input.type = "text"; input.id = "codeInput";
-    input.placeholder = "다른 기기에서 만든 코드 붙여넣기";
+    input.autocapitalize = "off"; input.autocomplete = "off"; input.spellcheck = false;
+    input.placeholder = "그 기기의 코드를 붙여넣기";
     box.appendChild(input);
 
-    const row = el("div", "syncrow");
-    const join = el("button", "btn ghost", "연결");
+    const join = el("button", "btn ghost", "이 코드로 연결");
     join.onclick = () => {
       const v = input.value.trim().toLowerCase();
       if (!v) { syncStatus("코드를 넣어주세요"); return; }
       syncCode = v; store.write(KEY_CODE, v);
       renderSyncBox();
-      syncPull(false).then(syncStatus).catch(e => syncStatus(e.message));
+      syncStatus("연결하는 중…");
+      syncPull(false).then(syncStatus).catch(showErr);
     };
-    const make = el("button", "btn", "새 코드 만들기");
-    make.onclick = () => {
-      syncCode = newCode(); store.write(KEY_CODE, syncCode);
-      renderSyncBox();
-      syncPush().then(() => syncStatus("올렸습니다. 폰에 이 코드를 넣으세요."))
-        .catch(e => syncStatus(e.message));
-    };
-    row.append(join, make);
-    box.appendChild(row);
+    box.appendChild(join);
   }
 
   const msg = el("p", "hint");
@@ -1824,7 +2037,7 @@ async function shareLink(){
       (copied ? " — 링크를 복사했습니다. 폰으로 보내서 열면 됩니다."
               : " — 아래 링크를 길게 눌러 복사하세요."));
   } catch (e) {
-    showMsg("링크를 만들지 못했습니다: " + e.message);
+    showMsg("링크를 만들지 못했습니다. " + sayError(e));
   }
 };
 
@@ -1946,7 +2159,7 @@ renderSyncBox();
 importShare();
 
 if (SYNC){
-  if (syncCode) syncPull().then(syncStatus).catch(e => syncStatus(e.message));
+  if (syncCode) syncPull().then(syncStatus).catch(showErr);
   // 폰에서 담고 PC로 돌아왔을 때 새로고침 없이 최신 목록이 오도록.
   // 코드는 로드 뒤에 연결할 수도 있으므로 리스너는 항상 걸어두고 안에서 확인합니다.
   window.addEventListener("focus", () => {
