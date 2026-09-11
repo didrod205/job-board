@@ -122,6 +122,15 @@
   .btn.ghost{background:var(--card); color:var(--fg); border:1px solid var(--line)}
   .btn.danger{background:#dc2626; color:#fff}
 
+  /* 목록을 모은 지 하루가 넘으면 눈에 띄게 알려줍니다. 그 사이 마감된 공고가
+     섞여 있어도 화면에서는 알 방법이 없기 때문입니다. */
+  .stale{
+    margin:14px 0 0; padding:11px 13px; font-size:12.5px; line-height:1.65;
+    background:var(--warn-soft); color:var(--warn);
+    border:1px solid transparent; border-radius:11px;
+  }
+  .stale b{font-weight:700}
+
   .bar{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:16px 0 10px}
 
   /* 선택한 공고에 할 일. 체크할 때만 뜨고, 모바일에서는 화면 아래에 고정됩니다. */
@@ -414,6 +423,8 @@
       <button class="tab" id="tab-memo" role="tab" aria-selected="false">메모장</button>
       <button class="tab" id="tab-black" role="tab" aria-selected="false">블랙리스트</button>
     </div>
+
+    <div class="stale" id="stale" hidden></div>
 
     <div class="bar">
       <span class="count" id="count"></span>
@@ -1766,6 +1777,20 @@ function updateBar(rows = shownRows){
   badge.textContent = active || "";
   badge.style.display = active ? "" : "none";
 }
+
+// 목록을 모은 지 며칠 지났는지. 수집기가 안 돌면 화면은 멀쩡해 보이는데
+// 실제로는 그새 마감된 공고가 그대로 남아 있습니다. 며칠 묵었는지 알려줍니다.
+function showStale(){
+  const box = document.getElementById("stale");
+  const days = Math.round((today - madeOn) / DAY);
+  if (days < 1){ box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML =
+    `이 목록은 <b>${days}일 전</b>(${DATA.generatedAt})에 모은 것입니다. ` +
+    `그 사이 회사가 내린 공고는 마감일이 남아 있어도 그대로 보입니다 — ` +
+    `열었을 때 마감돼 있으면 그 때문입니다.`;
+}
+showStale();
 
 function render(){
   // 예약해둔 다시 그리기가 있으면 여기서 같이 처리합니다.
